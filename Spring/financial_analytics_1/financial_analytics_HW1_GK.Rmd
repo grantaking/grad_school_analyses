@@ -1,0 +1,607 @@
+---
+title: "Financial Analytics HW 1"
+output: html_notebook
+---
+
+Load the required libraries and import the data
+```{r}
+library(haven)
+library(gmodels)
+library(vcd)
+library(smbinning)
+library(dplyr)
+library(stringr)
+
+accepts <- as.data.frame(read_sas("accepted_customers.sas7bdat"))
+rejects <- as.data.frame(read_sas("rejected_customers.sas7bdat"))
+
+accepts$dataset <- "accepts"
+rejects$dataset <- "rejects"
+```
+
+
+
+setting categorical variables as factors
+```{r}
+#first removing commas from PROF and PRODUCT
+accepts$PRODUCT <- gsub(",","",accepts$PRODUCT)
+accepts$PROF <- gsub(",","",accepts$PROF)
+rejects$PRODUCT <- gsub(",","",rejects$PRODUCT)
+rejects$PROF <- gsub(",","",rejects$PROF)
+
+#grouping some levels of the CARDS variable into other (very few observations)
+accepts$CARDS[accepts$CARDS %in% c("American Express", "VISA Others", "VISA mybank","Other credit car", "VISA Citibank") ] <- "Other credit car"
+rejects$CARDS[rejects$CARDS %in% c("American Express", "VISA Others", "VISA mybank","Other credit car", "VISA Citibank") ] <- "Other credit car"
+
+#grouping some levels of the CAR variable as well (because there is an extra group in the rejects dataset)
+accepts$CAR[accepts$CAR == 'Motorbike'] <- 'Car and Motor bi'
+rejects$CAR[rejects$CAR == 'Motorbike'] <- 'Car and Motor bi'
+
+#grouping missing PROF level into other (only one observation)
+accepts$PROF[accepts$PROF==""] <- "Others"
+rejects$PROF[rejects$PROF==""] <- "Others"
+#grouping TEL 0 with 1 (only one observation)
+accepts$TEL[accepts$TEL==0] <- 1
+rejects$TEL[rejects$TEL==0] <- 1
+
+
+#grouping PRODUCT 'Others' with PRODUCT 'Radio TV Hifi'
+accepts$PRODUCT[accepts$PRODUCT=="Others"] <- "Radio TV Hifi"
+rejects$PRODUCT[rejects$product=="Others"] <- "Radio TV Hifi"
+
+
+cat_list <- c('BUREAU','CAR','CARDS','DIV','EC_CARD','FINLOAN','LOCATION',
+             'NAT','PRODUCT','PROF','REGN','RESID','STATUS','TEL','TITLE')
+for (var in cat_list) {
+  accepts[[var]] <- as.factor(accepts[[var]])
+  rejects[[var]] <- as.factor(rejects[[var]])
+}
+
+accepts$GB <- as.integer(accepts$GB)
+#renaming _freq_ to weight
+colnames(accepts)[26] <- "weight"
+
+#setting the 'good' variable to be the inverse of the GB variable
+accepts$good <- ifelse(accepts$GB == 0, 1, 0)
+
+#deleting columns in the rejects dataset so that smbinning works (column ID has to be the same)
+rejects$INC <- NULL
+rejects$INC1 <- NULL
+
+#
+```
+
+
+Create training and validation
+```{r}
+
+set.seed(12345)
+train_id <- sample(seq_len(nrow(accepts)), size = floor(0.7*nrow(accepts)))
+
+train <- accepts[train_id, ]
+test <- accepts[-train_id, ]
+
+```
+
+
+Information Value for each variable
+
+```{r}
+iv_summary <- smbinning.sumiv(train,'good')
+smbinning.sumiv.plot(iv_summary)
+iv_summary
+
+
+```
+
+
+Based on this we would select:
+TMJOB1,
+INCOME,
+PERS_H,
+CARDS,
+EC_CARD,
+TEL,
+CAR,
+CASH,
+CHILDREN,
+TMADD
+
+We are not selecting STATUS, AGE, and NAT because they are either discriminatory or unexplainable.
+
+I am doing TEL and CAR.
+
+```{r}
+TEL.bin <- smbinning.factor(train, y="good", x="TEL")
+CAR.bin <- smbinning.factor(train, y="good", x="CAR")
+
+smbinning.plot(TEL.bin, option='dist', sub='TEL')
+smbinning.plot(CAR.bin, option='dist', sub='TEL')
+
+```
+
+Binning of continuous variables
+```{r}
+
+# Binning of Continuous Variables - IV >= 0.1 #
+num_names <- names(train)[sapply(train, is.numeric)] # Gathering the names of numeric variables in data #
+#removing 3rd element (age) from the list because it is discriminatory
+num_names <- num_names[-3]
+num_names <- num_names[-1]
+
+result_all_sig <- list() # Creating empty list to store all results #
+
+for(i in 1:length(num_names)){
+  check_res <- smbinning(df = train, y = "good", x = num_names[i])
+  
+  if(check_res == "Uniques values < 5") {
+    next
+  }
+  else if(check_res == "No significant splits") {
+    next
+  }
+  else if(check_res$iv < 0.02) {
+    next
+  }
+  else {
+  result_all_sig[[num_names[i]]] <- check_res
+  }
+}
+```
+
+Now doing it for factor variables
+```{r}
+num_names_factor <- names(train)[sapply(train, is.factor)] # Gathering the names of numeric variables in data #
+#removing element #5 (status) from the list because it is discriminatory
+num_names_factor <- num_names_factor[-5]
+#removing element #11 (nationality) from the list because it is discriminatory
+num_names_factor <- num_names_factor[-11]
+result_all_sig_factor <- list() # Creating empty list to store all results #
+
+for(i in 1:length(num_names_factor)){
+  check_res <- smbinning.factor(df = train, y = "good", x= num_names_factor[i])
+  
+  if(check_res == "Uniques values < 5") {
+    next
+  }
+  else if(check_res == "No significant splits") {
+    next
+  }
+  else if(check_res$iv < 0.02) {
+    next
+  }
+  else {
+  result_all_sig_factor[[num_names_factor[i]]] <- check_res
+  }
+}
+
+```
+
+Generating variables of bins
+```{r}
+gen_bin <- function(data){
+  data2 <- data.frame(data)
+  for(i in 1:length(result_all_sig)) {
+    data2 <- smbinning.gen(df = data2, ivout = result_all_sig[[i]], chrname = paste(result_all_sig[[i]]$x, "_bin", sep = ""))
+  }
+
+  for(i in 1:length(result_all_sig_factor)) {
+    data2 <- smbinning.factor.gen(df = data2, ivout = result_all_sig_factor[[i]], chrname = paste(result_all_sig_factor[[i]]$x, "_bin", sep = ""))
+  }
+  
+  return(data2)
+}
+
+train_bin <- gen_bin(train)
+```
+
+Generating variables of WOE values
+```{r}
+gen_woe <- function(data) {
+  for (j in 1:length(result_all_sig)) {
+    for (i in 1:nrow(data)) {
+      bin_name <- paste(result_all_sig[[j]]$x, "_bin", sep = "")
+      bin <- substr(data[[bin_name]][i], 2, 2)
+  
+      woe_name <- paste(result_all_sig[[j]]$x, "_WOE", sep = "")
+      
+      if(bin == 0) {
+        bin <- dim(result_all_sig[[j]]$ivtable)[1] - 1
+        data[[woe_name]][i] <- result_all_sig[[j]]$ivtable[bin, "WoE"]
+      } else {
+        data[[woe_name]][i] <- result_all_sig[[j]]$ivtable[bin, "WoE"]
+      }
+    }
+  }
+  
+  for (j in 1:length(result_all_sig_factor)) {
+    for (i in 1:nrow(data)) {
+      bin_name <- paste(result_all_sig_factor[[j]]$x, "_bin", sep = "")
+      bin <- substr(data[[bin_name]][i], 2, 2)
+  
+      woe_name <- paste(result_all_sig_factor[[j]]$x, "_WOE", sep = "")
+      
+      if(bin == 0) {
+        bin <- dim(result_all_sig_factor[[j]]$ivtable)[1] - 1
+        data[[woe_name]][i] <- result_all_sig_factor[[j]]$ivtable[bin, "WoE"]
+      } else {
+        data[[woe_name]][i] <- result_all_sig_factor[[j]]$ivtable[bin, "WoE"]
+      }
+    }
+  }
+  
+  return(data)
+}
+
+train_bin <- gen_woe(train_bin)
+```
+
+Build the Initial Logistic Regression
+```{r}
+initial_score <- glm(data = train_bin, GB ~ PERS_H_WOE +
+                       TMADD_WOE +
+                       TMJOB1_WOE +
+                       INCOME_WOE +
+                       CASH_WOE +
+                       TEL_WOE +
+                       EC_CARD_WOE +
+                       PROF_WOE +
+                       CAR_WOE +
+                       CARDS_WOE,
+                     weights = train_bin$weight,
+                     family = "binomial")
+
+summary(initial_score)
+```
+
+Evaluate the initial Model - Training Data
+```{r}
+train_bin$pred <- initial_score$fitted.values
+
+smbinning.metrics(dataset = train_bin, prediction = "pred", actualclass = "GB", report = 1)
+smbinning.metrics(dataset = train_bin, prediction = "pred", actualclass = "GB", plot = "ks")
+smbinning.metrics(dataset = train_bin, prediction = "pred", actualclass = "GB", plot = "auc")
+```
+
+
+Evaluate the initial model - Testing Data
+```{r}
+test_bin <- gen_bin(test)
+test_bin <- gen_woe(test_bin)
+
+test_bin$pred <- predict(initial_score, newdata=test_bin, type='response')
+
+smbinning.metrics(dataset = test_bin, prediction = "pred", actualclass = "GB", report = 1)
+smbinning.metrics(dataset = test_bin, prediction = "pred", actualclass = "GB", plot = "ks")
+smbinning.metrics(dataset = test_bin, prediction = "pred", actualclass = "GB", plot = "auc")
+```
+
+Add scores to initial model
+
+```{r}
+pdo <- 50
+score <- 500
+odds <- 20
+fact <- pdo/log(2)
+os <- score - fact*log(odds)
+var_names <- names(initial_score$coefficients[-1])
+
+for(i in var_names) {
+  beta <- initial_score$coefficients[i]
+  beta0 <- initial_score$coefficients["(Intercept)"]
+  nvar <- length(var_names)
+  WOE_var <- train_bin[[i]]
+  points_name <- paste(str_sub(i, end = -4), "points", sep="")
+
+  train_bin[[points_name]] <- -(WOE_var*(beta) + (beta0/nvar))*fact + os/nvar
+}
+
+colini <- (ncol(train_bin)-nvar + 1)
+colend <- ncol(train_bin)
+train_bin$Score <- rowSums(train_bin[, colini:colend])
+
+hist(train_bin$Score, breaks = 50,  main = "Distribution of Train Scores", xlab = "Score")
+
+for(i in var_names) {
+  beta <- initial_score$coefficients[i]
+  beta0 <- initial_score$coefficients["(Intercept)"]
+  nvar <- length(var_names)
+  WOE_var <- test_bin[[i]]
+  points_name <- paste(str_sub(i, end = -4), "points", sep="")
+  
+  test_bin[[points_name]] <- -(WOE_var*(beta) + (beta0/nvar))*fact + os/nvar
+}
+
+colini <- (ncol(test_bin)-nvar + 1)
+colend <- ncol(test_bin)
+test_bin$Score <- rowSums(test_bin[, colini:colend])
+
+hist(test_bin$Score, breaks = 50, main = "Distribution of Test Scores", xlab = "Score")
+
+accepts_scored <- rbind(train_bin, test_bin)
+hist(accepts_scored$Score, breaks = 50,  main = "Distribution of Scores", xlab = "Score")
+```
+
+Reject Inference - clean and prepare reject data
+```{r}
+#setting min and max for bins to include the reject data
+for(i in names(result_all_sig)) {
+  result_all_sig[[i]]$bands[1] <- min(c(accepts[[i]], rejects[[i]]), na.rm = TRUE)
+  result_all_sig[[i]]$bands[length(result_all_sig[[i]]$bands)] <- max(c(accepts[[i]], rejects[[i]]), na.rm = TRUE)
+}
+```
+
+```{r}
+rejects_scored <- rejects
+for(i in 1:length(result_all_sig)) {
+    rejects_scored <- smbinning.gen(df = rejects_scored, ivout = result_all_sig[[i]], chrname = paste(result_all_sig[[i]]$x, "_bin", sep = ""))
+  }
+
+  for(i in 1:length(result_all_sig_factor)) {
+    rejects_scored <- smbinning.factor.gen(df = rejects_scored, ivout = result_all_sig_factor[[i]], chrname = paste(result_all_sig_factor[[i]]$x, "_bin", sep = ""))
+  }
+
+
+```
+
+```{r}
+
+for (j in 1:length(result_all_sig)) {
+  for (i in 1:nrow(rejects_scored)) {
+    bin_name <- paste(result_all_sig[[j]]$x, "_bin", sep = "")
+    bin <- substr(rejects_scored[[bin_name]][i], 2, 2)
+    
+    woe_name <- paste(result_all_sig[[j]]$x, "_WOE", sep = "")
+    
+    if(bin == 0) {
+      bin <- dim(result_all_sig[[j]]$ivtable)[1] - 1
+      rejects_scored[[woe_name]][i] <- result_all_sig[[j]]$ivtable[bin, "WoE"]
+    } else {
+      rejects_scored[[woe_name]][i] <- result_all_sig[[j]]$ivtable[bin, "WoE"]
+    }
+  }
+}
+
+
+for (j in 1:length(result_all_sig_factor)) {
+  for (i in 1:nrow(rejects_scored)) {
+    bin_name <- paste(result_all_sig_factor[[j]]$x, "_bin", sep = "")
+    bin <- substr(rejects_scored[[bin_name]][i], 2, 2)
+    
+    woe_name <- paste(result_all_sig_factor[[j]]$x, "_WOE", sep = "")
+    
+    if(bin == 0) {
+      bin <- dim(result_all_sig[[j]]$ivtable)[1] - 1
+      rejects_scored[[woe_name]][i] <- result_all_sig_factor[[j]]$ivtable[bin, "WoE"]
+    } else {
+      rejects_scored[[woe_name]][i] <- result_all_sig_factor[[j]]$ivtable[bin, "WoE"]
+    }
+  }
+}
+
+
+pdo <- 20
+score <- 600
+odds <- 50
+fact <- pdo/log(2)
+os <- score - fact*log(odds)
+var_names <- names(initial_score$coefficients[-1])
+
+for(i in var_names) {
+  beta <- initial_score$coefficients[i]
+  beta0 <- initial_score$coefficients["(Intercept)"]
+  nvar <- length(var_names)
+  WOE_var <- rejects_scored[[i]]
+  points_name <- paste(str_sub(i, end = -4), "points", sep="")
+  
+  rejects_scored[[points_name]] <- -(WOE_var*(beta) + (beta0/nvar))*fact + os/nvar
+}
+
+colini <- (ncol(rejects_scored)-nvar + 1)
+colend <- ncol(rejects_scored)
+rejects_scored$Score <- rowSums(rejects_scored[, colini:colend])
+```
+
+
+Reject inference - hard cutoff
+original bad rate: 3.23%
+NEED TO FIGURE OUT WEIGHTING AND CUTOFF TO APPLY
+
+```{r}
+# scoring rejected applications with model built on approved applicants
+rejects_scored$pred <- predict(initial_score, newdata = rejects_scored, type = "response")
+
+rejects$GB <- as.numeric(rejects_scored$pred > 0.0348)
+rejects$good <- abs(rejects$GB - 1)
+rejects$weight <- ifelse(rejects$GB == 1, 1, 30)
+
+rejects_sampled <- rejects[sample(nrow(rejects), 1000), ]
+
+comb <- rbind(accepts, rejects) # New Combined Data Set #
+```
+
+!!!Build final scorecard Model!!!
+
+
+
+```{r}
+
+set.seed(1234)
+train_id <- sample(seq_len(nrow(comb)), size = floor(0.75*nrow(comb)))
+
+train_comb <- comb[train_id, ]
+test_comb <- comb[-train_id, ]
+
+iv_summary <- smbinning.sumiv(df = train_comb, y = "good")
+
+smbinning.sumiv.plot(iv_summary)
+iv_summary
+```
+
+Redoing the binning on the combined dataset
+```{r}
+# Binning of Continuous Variables - IV >= 0.1 #
+num_names <- names(train_comb)[sapply(train_comb, is.numeric)] # Gathering the names of numeric variables in data #
+#removing 3rd element (age) from the list because it is discriminatory, and also the first element (children)
+num_names <- num_names[-3]
+num_names <- num_names[-1]
+
+result_all_sig <- list() # Creating empty list to store all results #
+
+for(i in 1:length(num_names)){
+  check_res <- smbinning(df = train_comb, y = "good", x = num_names[i])
+  
+  if(check_res == "Uniques values < 5") {
+    next
+  }
+  else if(check_res == "No significant splits") {
+    next
+  }
+  else if(check_res$iv < 0.02) {
+    next
+  }
+  else {
+  result_all_sig[[num_names[i]]] <- check_res
+  }
+}
+
+
+num_names_factor <- names(train_comb)[sapply(train_comb, is.factor)] # Gathering the names of numeric variables in data #
+#removing element #5 (status) from the list because it is discriminatory
+num_names_factor <- num_names_factor[-5]
+#removing element #11 (nationality) from the list because it is discriminatory
+num_names_factor <- num_names_factor[-11]
+result_all_sig_factor <- list() # Creating empty list to store all results #
+
+for(i in 1:length(num_names_factor)){
+  check_res <- smbinning.factor(df = train_comb, y = "good", x= num_names_factor[i])
+  
+  if(check_res == "Uniques values < 5") {
+    next
+  }
+  else if(check_res == "No significant splits") {
+    next
+  }
+  else if(check_res$iv < 0.02) {
+    next
+  }
+  else {
+  result_all_sig_factor[[num_names_factor[i]]] <- check_res
+  }
+}
+```
+
+Generating WOE variables on final sample
+
+```{r}
+train_comb_bin <- gen_bin(train_comb)
+train_comb_bin <- gen_woe(train_comb_bin)
+```
+
+
+Running final model
+```{r}
+
+final_score <- glm(data = train_comb_bin, GB ~ PERS_H_WOE +
+                     TMADD_WOE +
+                     TMJOB1_WOE +
+                     CASH_WOE +
+                     TEL_WOE +
+                     FINLOAN_WOE +
+                     EC_CARD_WOE +
+                     PRODUCT_WOE +
+                     PROF_WOE +
+                     CAR_WOE +
+                     CARDS_WOE
+                     , weights = train_comb_bin$weight, family = "binomial")
+
+summary(final_score)
+```
+
+Predicting on training
+```{r}
+train_comb_bin$pred <- final_score$fitted.values
+
+smbinning.metrics(dataset = train_comb_bin, prediction = "pred", actualclass = "GB", report = 1)
+smbinning.metrics(dataset = train_comb_bin, prediction = "pred", actualclass = "GB", plot = "ks")
+smbinning.metrics(dataset = train_comb_bin, prediction = "pred", actualclass = "GB", plot = "auc")
+```
+
+Predicting on test
+```{r}
+test_comb_bin <- gen_bin(test_comb)
+test_comb_bin <- gen_woe(test_comb_bin)
+
+test_comb_bin$pred <- predict(final_score, newdata=test_comb_bin, type='response')
+
+smbinning.metrics(dataset = test_comb_bin, prediction = "pred", actualclass = "GB", report = 1)
+smbinning.metrics(dataset = test_comb_bin, prediction = "pred", actualclass = "GB", plot = "ks")
+smbinning.metrics(dataset = test_comb_bin, prediction = "pred", actualclass = "GB", plot = "auc")
+```
+
+
+Creating final scorecard
+```{r}
+pdo <- 50
+score <- 500
+odds <- 20
+fact <- pdo/log(2)
+os <- score - fact*log(odds)
+var_names <- names(final_score$coefficients[-1])
+
+for(i in var_names) {
+  beta <- final_score$coefficients[i]
+  beta0 <- final_score$coefficients["(Intercept)"]
+  nvar <- length(var_names)
+  WOE_var <- train_comb_bin[[i]]
+  points_name <- paste(str_sub(i, end = -4), "points", sep="")
+  
+  train_comb_bin[[points_name]] <- -(WOE_var*(beta) + (beta0/nvar))*fact + os/nvar
+}
+
+colini <- (ncol(train_comb_bin)-nvar + 1)
+colend <- ncol(train_comb_bin)
+train_comb_bin$Score <- rowSums(train_comb_bin[, colini:colend])
+
+hist(train_comb_bin$Score, breaks = 50, main = "Distribution of Scores", xlab = "Score")
+
+for(i in var_names) {
+  beta <- final_score$coefficients[i]
+  beta0 <- final_score$coefficients["(Intercept)"]
+  nvar <- length(var_names)
+  WOE_var <- test_comb_bin[[i]]
+  points_name <- paste(str_sub(i, end = -4), "points", sep="")
+  
+  test_comb_bin[[points_name]] <- -(WOE_var*(beta) + (beta0/nvar))*fact + os/nvar
+}
+
+colini <- (ncol(test_comb_bin)-nvar + 1)
+colend <- ncol(test_comb_bin)
+test_comb_bin$Score <- rowSums(test_comb_bin[, colini:colend])
+
+
+hist(test_comb_bin$Score, breaks = 50, main = "Distribution of Scores" , xlab = "Score")
+
+comb_scored <- rbind(train_comb_bin, test_comb_bin)
+hist(comb_scored$Score, breaks = 50,  main = "Distribution of Scores", xlab = "Score")
+
+```
+
+What is the 25th percentile score?
+
+```{r}
+quantile(comb_scored$Score, .25)
+```
+
+Look at only the accepts above this cutoff. What is their default rate?
+
+
+```{r}
+library(weights)
+subset <- comb_scored[comb_scored$Score > 445.044  & comb_scored$dataset == "accepts",]
+wpct(subset$GB, weight=subset$weight)
+
+subset_accepts <- comb_scored[comb_scored$dataset == "accepts",]
+wpct(subset_accepts$GB, weight=subset_accepts$weight)
+```
+

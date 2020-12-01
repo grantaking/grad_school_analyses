@@ -1,0 +1,137 @@
+---
+title: "survival_HW3"
+author: "Grant King"
+date: "11/17/2019"
+output: html_document
+---
+
+
+This is the code for the second survival analysis homework
+
+Let's load data
+
+```{r}
+library(haven)
+library(tidyverse)
+hurricane <- read_sas('hurricane.sas7bdat')
+```
+
+This time we have to reshape the data based on hours. But first, let's generate our event variable and drop the variables that we don't need. The event variable this time is whether the pump had a motor failure.
+
+```{r}
+hurricane$motorfail <- ifelse(hurricane$reason == 2,1,0)
+hurricane[,c('reason','reason2','survive')] <- NULL
+
+hurricane$pump_id <- as.numeric(rownames(hurricane))
+```
+
+
+Now we can use the survSplit function from the survival library to reshape the data into the long format we need, and then set the time-varying covariates manually.
+
+```{r}
+library(survival)
+hurricane_long <- survSplit(data=hurricane, cut=c(1:48),end="hour",start="time0", event="motorfail")
+
+hurricane_long$running <- 0
+
+hurricane_long$running = ifelse(hurricane_long$hour == 1, hurricane_long$h1, hurricane_long$running)
+hurricane_long$running = ifelse(hurricane_long$hour == 2, hurricane_long$h2, hurricane_long$running)
+
+for(hr in c(1:48)) {
+  hurricane_long$running <- ifelse(hurricane_long$hour == hr, eval(parse(text=paste("hurricane_long$h",hr,sep=""))), hurricane_long$running)
+}
+
+hurricane_long <- hurricane_long[, -c(9:56)]
+```
+
+Now let's check to see whether there are any missing values for variables
+
+```{r}
+sapply(hurricane_long, function(x) sum(is.na(x)))
+```
+
+Looks like there are 55 rows where that happens in the "running" variable. Let's see if we can find out anything else
+
+```{r}
+hurricane_long[is.na(hurricane_long$running),]
+```
+
+It looks like this only happens for 3 pumps (442, 632, and 647), so we can just drop them from the dataset and continue with our analysis
+
+```{r}
+`%not_in%` <- purrr::negate(`%in%`)
+hurricane_long <- hurricane_long[hurricane_long$pump_id %not_in% c(442,632,647),]
+sapply(hurricane_long, function(x) sum(is.na(x)))
+```
+Great. Now we don't have any missing values.
+
+Now we need to create the explanatory variable of interest: whether the motor is constantly running in the 12 hours before the motor fails.
+
+```{r}
+hurricane_long$hours_ge12 <- as.integer(
+  (hurricane_long$running * unlist(lapply(rle(hurricane_long$running)$lengths, seq_len))) >= 12
+  & 
+   hurricane_long$hour >= 12
+  )
+```
+
+Now we are going to set up our backwards selection algorithm to find which variables are significant.First we set up our full model.
+
+LEAVING OUT TRASHRACK FOR NOW BECAUSE IT CAUSES QUASILINEAR SEPARATION. NO PUMPS WITH A TRASHRACK HAD MOTOR FAILURE
+
+```{r}
+full.model <- coxph(Surv(time0, hour, motorfail == 1) ~ backup + age + bridgecrane + servo + gear + slope + elevation + running + hours_ge12, data=hurricane_long)
+
+summary(full.model)
+```
+
+Let's test all of our assumptions on this model before proceeding to variable selection. First, we test the linearity assumption (for our non-dummy variables)
+
+```{r}
+visreg(full.model, "age", xlab="age", ylab="partial residuals", gg=TRUE, band=FALSE) + geom_smooth(col="red",fill="red") + theme_bw()
+
+visreg(full.model, "slope", xlab="slope", ylab="partial residuals", gg=TRUE, band=FALSE) + geom_smooth(col="red",fill="red") + theme_bw()
+```
+
+Great, all of these variables look like they have linear relationships with the target. Next, we test proportional hazards assumptions.
+
+```{r}
+
+full.model.zph <- cox.zph(full.model, transform = "km")
+full.model.zph
+
+full.model.zph <- cox.zph(full.model, transform = "identity")
+full.model.zph
+
+full.model.zph <- cox.zph(full.model, transform = "log")
+full.model.zph
+
+full.model.zph <- cox.zph(full.model, transform = "rank")
+full.model.zph
+```
+From this we can see that it looks like age is correlated with the KM estimate. To account for this, we should include the KM estimate in our final model. However, since it might be removed during variable selection (which we don't want), we will add it in after variable selection if age is in the final model.
+
+Next we set up our backwards selection algorithm. Notice that we are using the number of rows in hurricane to calculate BIC, not the number of rows in hurricane_long. This is because there is more than 1 row per observation in hurricane_long.
+
+```{r}
+back.model <- step(full.model, direction = "backward", k=log(nrow(hurricane)))
+
+```
+
+Age is in the final model, so now we will add the tt function to deal with non-proportional hazards. Just relying on the identity function.
+
+```{r}
+final.model <- coxph(Surv(time0, hour, motorfail == 1) ~ slope + age + tt(age), data=hurricane_long, tt = function(x, time, ...){x*time})
+summary(final.model)
+
+```
+
+The coefficient that the engineers were interested in, whether or not the pump had been running constantly for the 12 hours before failure, did not end up in the final model. Let's test a model including that coefficient just to see the direction of the effect, even if it wasn't selected.
+
+```{r}
+hours.model <- coxph(Surv(time0, hour, motorfail == 1) ~ age + slope + hours_ge12 +  tt(age), data=hurricane_long, tt = function(x, time, ...){x*time})
+
+summary(hours.model)
+```
+
+The coefficient definitely isn't significant, so we can probably conclude that there is no effect.

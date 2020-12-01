@@ -1,0 +1,175 @@
+---
+title: "Sim and Risk -- HW1"
+author: "Will Elmore"
+date: "1/30/2020"
+
+---
+
+```{r}
+library(car)
+library(caret)
+library(tidyr)
+library(dplyr)
+library(stats)
+library(readxl)
+library(ggplot2)
+library(clipr)
+library(EnvStats)
+library(triangle)
+```
+
+
+
+
+Importing - NOTE: I cleaned the data manually to have shorter column names and to remove the top two rows of each sheet (which is metadata)
+
+column names for the costs df were changed to
+["Date",
+ "crude_well_cost",
+ "gas_well_cost",
+ "dry_well_cost",
+ "crude_return",
+ "gas_return",
+ "dry_return"]
+```{r}
+# Importing projections
+projections <- read_excel("Analysis_Data.xlsx", sheet = "Price Projections")
+
+# importing drilling costs
+costs <- read_excel("Analysis_Data.xlsx", sheet = "Drilling Cost")
+
+
+```
+
+
+1) Build a kernel density estimate of the distribution of changes between 1990 and 2006. Use this KDE to simulate average changes from 2006-2012 as well.
+
+
+subsetting 1990:2006 
+```{r}
+costs.sub <- costs[32:47,]
+costs.sub[,2:7] <- sapply(costs.sub[,2:7], as.numeric)
+```
+
+"Instead of focusing on costs for oil, gas, and dry wells individually, the Company’s
+analysts recommend to treat them all equally and assume an average cost applies to them all."
+
+Concatenating the different columns so that we have 48 total observations
+  - bandwith is 0.07935
+```{r}
+costs_vec <- c(costs.sub[['crude_return']], costs.sub[['gas_return']], costs.sub[['dry_return']])
+costs.sub$avg_costs <- (rowSums(costs.sub[,5:7]) / 3)
+
+density.costs <- density(costs_vec, "SJ-ste")
+
+density.costs
+
+# Plot estimated distribution from 10,000 samples
+set.seed(12345)
+est.density.costs <- rkde(fhat = kde(costs_vec, h=0.07935), n = 10000)
+hist(est.density.costs, breaks = 50, main = 'Estimated Value Distribution', xlab = "value")
+```
+
+
+2) Do one-year changes from 2006 to 2012 follow a normal distribution?
+
+Since they are said to follow the same distribution as the 1990-2006 costs, let's look at the distribution of those (because the sample is larger). Based on the Q-Q plot below, those costs are normal, so we can assume the 2006-2012 costs are normal as well.
+``` {r}
+qqnorm( y = est.density.costs, main = "Normal Q-Q Plot",
+       xlab = "Theoretical Quantiles", ylab = "Sample Quantiles",
+       plot.it = TRUE, datax = FALSE)  
+qqline(y = est.density.costs) # highlight and run with qqnorm 
+```
+
+
+
+
+
+3) Simulate possible future values of 2020 drilling costs under the assumption of normality as well as under the kernel density estimate you created (2006-2012) as well as the information from 2015 - 2020. Make a recommendation for which one you feel the company should use.
+
+Under assumption of normality - just use the mean and standard deviation from the density estimate from 1990-2006
+
+First calculating the average cost in 2006.
+
+```{r}
+P2006 <- rowMeans(costs[47,2:4])
+```
+
+Now going through simulating change each year to get 10000 simulations of 2020 cost
+
+```{r}
+set.seed(12345)
+
+mu = mean(costs_vec)
+stdev = sd(costs_vec)
+
+norm_cost_2020 <- rep(0,10000)
+
+
+for(i in 1:10000) {
+  Pt <- P2006
+  
+  for(j in 2007:2020) {
+    r <- rnorm(n=1,mean=mu, sd=stdev)
+    Pt <- Pt*(1+r)
+  }
+  
+  norm_cost_2020[i] <- Pt
+}
+```
+
+
+Plotting distribution of possible 2020 costs with normality assumption
+```{r}
+hist(norm_cost_2020, breaks = 50, main = 'Estimated 2020 Cost Distribution - Normal', xlab = "Dollars")
+
+mean(norm_cost_2020)
+sd(norm_cost_2020)
+```
+
+Using info from kde, as well as 2012-2020.
+- From 2006-2012, use sample from the kde estimate
+
+- From 2012-2015, use a triangle distribution with mean -9.17%, min -22%, max -7%
+
+- From 2015-2020, use a traingle distribution with mean 5%, maximum 6%, minimum 2%.
+
+```{r}
+set.seed(12345)
+  
+nonnorm_cost_2020 <- rep(0,10000)
+
+for(i in 1:10000) {
+  Pt <- P2006
+  
+  for(j in 2007:2012) {
+    r <- rkde(fhat=kde(costs_vec, h=0.07935), n=1)
+    Pt <- Pt*(1+r)
+  }
+  
+  for(j in 2013-2015) {
+    r <- rtriangle(n=1, a=-.22, b=-.07, c=-.0917)
+    Pt <- Pt*(1+r)
+  }
+  
+  for(j in 2016-2020) {
+    r <- rtriangle(n=1, a=.02, b=.06, c=.05)
+    Pt <- Pt*(1+r)
+  }
+  
+  nonnorm_cost_2020[i] <- Pt
+}
+
+```
+
+
+Plotting distribution of possible 2020 costs without normality assumption
+
+```{r}
+hist(nonnorm_cost_2020, breaks = 50, main = 'Estimated 2020 Cost Distribution - NonNormal', xlab = "Dollars")
+
+mean(nonnorm_cost_2020)
+sd(nonnorm_cost_2020)
+```
+
+We feel that the company should use the projected cost distribution that incorporates historical distribution from 1990-2006 as well as information known about 2012-2020 price changes. This will likely provide a more accurate estimate of 2020 prices, since the normal distribution projections do not take into account any information about the decrease in prices from 2012-2015

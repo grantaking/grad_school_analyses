@@ -1,0 +1,206 @@
+---
+title: "survival_HW2"
+author: "Grant King"
+date: "11/10/2019"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+This is the code for the second survival analysis homework
+
+Let's load data
+
+```{r}
+library(haven)
+library(tidyverse)
+hurricane <- read_sas('hurricane.sas7bdat')
+```
+
+Let's drop the variables 'H1' through 'H48'
+
+```{r}
+hurricane <- hurricane[, -c(9:56)]
+```
+
+
+Let's construct our target variable (Flood failure) and get rid of the variables needed to create it. We won't need these for modeling.
+
+```{r}
+hurricane$floodfail <- ifelse(hurricane$reason == 1,1,0)
+hurricane[,c('reason','reason2','survive')] <- NULL
+```
+
+Now we have our final dataset
+
+```{r}
+summary(hurricane)
+```
+
+Now we start our accelerated failure time model by fitting models for different distributions
+
+```{r}
+library(survival)
+library(survminer)
+library(flexsurv)
+
+aft.w <- flexsurvreg(Surv(hour, floodfail==1) ~ backup + age + bridgecrane + servo + gear + trashrack + slope + elevation , data = hurricane, dist = "weibull")
+
+aft.e <- flexsurvreg(Surv(hour, floodfail==1) ~ backup + age + bridgecrane + servo + gear + trashrack + slope + elevation , data = hurricane, dist = "exp")
+
+aft.g <- flexsurvreg(Surv(hour, floodfail==1) ~ backup + age + bridgecrane + servo + gear + trashrack + slope + elevation , data = hurricane, dist = "gamma")
+
+aft.ln <- flexsurvreg(Surv(hour, floodfail==1) ~ backup + age + bridgecrane + servo + gear + trashrack + slope + elevation , data = hurricane, dist = "lnorm")
+
+aft.ll <- flexsurvreg(Surv(hour, floodfail==1) ~ backup + age + bridgecrane + servo + gear + trashrack + slope + elevation , data = hurricane, dist = "llogis")
+
+aft.f <- flexsurvreg(Surv(hour, floodfail==1) ~ backup + age + bridgecrane + servo + gear + trashrack + slope + elevation , data = hurricane, dist = "genf")
+
+```
+
+We do check to see which distributions have the highest log-likelihood. It looks like the generalized F distribution is the best 
+
+```{r}
+like.e <- aft.e$loglik
+like.w <- aft.w$loglik
+like.ln <- aft.ln$loglik
+like.g <- aft.g$loglik
+like.ll <- aft.ll$loglik
+like.f <- aft.f$loglik
+
+Models <- c('Exponential','Weibull','Lognormal','Gamma','Log-logistic','Generalized F')
+loglikes <- c(like.e, like.w, like.ln ,like.g, like.ll, like.f)
+cbind(Models, loglikes)
+```
+
+Statistical tests that the generalized F distribution has the highest log-likelihood, followed by Weibull, Gamma, and Log-Logistic distributions (all roughly tied).
+
+```{r}
+pval.e.g <- 1 - pchisq((-2*(like.e-like.g)), 2)
+pval.w.g <- 1 - pchisq((-2*(like.w-like.g)), 1)
+pval.ln.g <- 1 - pchisq((-2*(like.ln-like.g)), 1)
+pval.g.f <- 1 - pchisq((-2*(like.g-like.f)), 1)
+pval.ll.g <- 1 - pchisq((-2*(like.ll-like.g)), 1)
+
+Tests <- c('Exp vs. Gam', 'Wei vs. Gam', 'LogN vs. Gam', 'Gam vs. F', 'LogL vs. Gam')
+P_values <- c(pval.e.g, pval.w.g, pval.ln.g, pval.g.f, pval.ll.g)
+cbind(Tests, P_values)
+
+```
+
+Now we visualize the cumulative hazard plots for each distribution.
+
+```{r}
+plot(aft.e, type = "cumhaz", ci = TRUE, conf.int = FALSE, las = 1, bty = "n",
+     xlab = "week", ylab = "Cumulative Hazard", main = "Exponential Distribution")
+
+plot(aft.w, type = "cumhaz", ci = TRUE, conf.int = FALSE, las = 1, bty = "n",
+     xlab = "week", ylab = "Cumulative Hazard", main = "Weibull Distribution")
+
+plot(aft.g, type = "cumhaz", ci = TRUE, conf.int = FALSE, las = 1, bty = "n",
+     xlab = "week", ylab = "Cumulative Hazard", main = "Gamma Distribution")
+
+plot(aft.ln, type = "cumhaz", ci = TRUE, conf.int = FALSE, las = 1, bty = "n",
+     xlab = "week", ylab = "Cumulative Hazard", main = "Log-Normal Distribution")
+
+plot(aft.ll, type = "cumhaz", ci = TRUE, conf.int = FALSE, las = 1, bty = "n",
+     xlab = "week", ylab = "Cumulative Hazard", main = "Log-Logistic Distribution")
+
+plot(aft.f, type = "cumhaz", ci = TRUE, conf.int = FALSE, las = 1, bty = "n",
+     xlab = "week", ylab = "Cumulative Hazard", main = "Generalized F Distribution")
+```
+
+Based on the visualization, we eliminate the generalized F distribution. Although it has the highest log-likelihood, its plot shows that it does not effectively capture patterns in the data.
+
+Log-Logistic, Gamma, and Weibull are all tied for 2nd place in terms of log-likelihood, so we choose the Weibull distribution for simplicity.
+
+From here, we start with variable selection using the Weibull model. We will use backwards selection with lowest BIC as the criteria for stopping.
+
+```{r}
+
+full.model <- survreg(Surv(hour, floodfail==1) ~ backup + age + bridgecrane + servo + gear + trashrack + slope + elevation , data = hurricane, dist = "weibull")
+
+back.model <- step(full.model, direction = "backward", k=log(nrow(hurricane)))
+
+
+
+```
+
+Our final model is below - it includes only 2 covariates
+
+```{r}
+summary(back.model)
+
+```
+
+We can interpret the coefficients of the model by exponentiating them. The numbers below represent the percent change in time to failure for each unit increase in a covariate.
+
+```{r}
+(exp(coef(back.model))-1)*100
+
+```
+
+Based on these coefficients, we can see that the servo is the only significant upgrade that can be made (slope cannot be upgraded). Each servo upgrade will increase the life expectancy of its pump by 47%.
+
+With a cost of 150,000 dollars each and a total budget of 2.5 million, we can upgrade the servos on 16 pumps.
+
+Let's see how many pumps could use servo upgrades.
+
+```{r}
+table(hurricane$servo)
+```
+
+
+Since we can only upgrade the servos of 16 pumps, it would be good to upgrade the servos of the pumps that are most susceptible to flood failure. This is because pumps that are less susceptible to flood failure will likely still fail for some other reason, so upgrading their servos will do little good.
+
+
+Let's predict median time to flood failure for all pumps.
+
+```{r}
+survprob.10 <- as.data.frame(predict(back.model, type = "quantile", se.fit = TRUE, p = 0.5))
+
+slope <- hurricane$slope
+servo <- hurricane$servo
+pump_id <- as.numeric(rownames(hurricane))
+
+predicted <- cbind(pump_id, servo, slope, survprob.10)
+```
+
+Then let's subset so that we are only looking at pumps that need a servo upgrade, sort by pumps with the quickest time to failure, and then pick the top 16.
+
+```{r}
+predicted <- predicted %>%
+            filter(hurricane$servo == 0) %>%
+            arrange(fit)
+
+```
+
+And finally, pick the top 16. These are the ones that we'll upgrade
+
+```{r}
+
+to_upgrade <- head(predicted,16)
+
+```
+
+These pumps are the ones that we will upgrade. Now let's estimate the time benefit for each upgrade
+
+```{r}
+
+to_upgrade['servo'] <- 1
+survprob.10.new <- as.data.frame(predict(back.model, type = "quantile", se.fit = TRUE, p = 0.5, newdata=to_upgrade))
+
+to_upgrade <- cbind(to_upgrade,survprob.10.new)
+names(to_upgrade) <- c('pump_id','servo' ,'slope', 'old_failure_time', 'old_se', 'new_failure_time', 'new_se')
+
+to_upgrade$time_dif <- to_upgrade$new_failure_time - to_upgrade$old_failure_time
+
+mean(to_upgrade$time_dif)
+sum(to_upgrade$time_dif)
+
+
+```
+
+By upgrading the servos on these 16 pumps, we extend their life expectancies by 21 hours each on average, or over 330 hours total.
+
+These estimated time benefits apply only to failures from floods, so they assume that these pumps will not fail for some other reason before flood failure.

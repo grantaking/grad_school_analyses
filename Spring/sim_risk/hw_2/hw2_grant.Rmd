@@ -1,0 +1,211 @@
+---
+title: 'Simulation & Risk: homework 2'
+author: 'Grant King'
+date: "2/11/2020"
+output: html_document
+---
+```{r packages}
+library(car)
+library(caret)
+library(tidyr)
+library(dplyr)
+library(stats)
+library(readxl)
+library(ggplot2)
+library(clipr)
+library(ks)
+library(EnvStats)
+library(triangle)
+library(knitr)
+library(MASS)
+library(rgl)
+library(graphics)
+```
+This will run all of the hw1 code to get the data/objects. 
+Paste the path to 'hw1_script.R' below..  
+```{r setup, echo=FALSE}
+opts_chunk$set(echo = FALSE, cache=FALSE)
+read_chunk('C:/Users/grant/Documents/MSA/Spring/sim_risk/hw_2/hw1_script.R')
+```
+
+click green arrow to run this chunk
+```{r hw1_results}
+```
+
+        
+        --- 
+ 
+        Step 1: Simulating the cost of a single dry well.
+
+        ---    
+
+
+Cost components:
+  Drilling costs
+  Seismic and Lease Costs
+  Professional Overhead costs for year 0
+
+
+```{r}
+set.seed(1)
+drill.cost.dry <- nonnorm_cost_2020 * 1000
+lease.cost.dry <- rnorm(n=10000, mean = 600, sd = 50) * 960
+seismic.cost.dry <- rnorm(n=10000, mean = 3, sd = .35) * 43000
+prof.cost.dry <- rtriangle(n=10000, a = 172000, b = 279500, c = 215000)
+
+dry.well.cost <- drill.cost.dry + lease.cost.dry + seismic.cost.dry + prof.cost.dry
+
+hist(dry.well.cost)
+```
+
+
+        --- 
+ 
+        step 2: Simulating the net present value of a single wet well
+
+        ---  
+        
+Net present value components:
+  Initial Costs:
+    Drilling cost
+    Seismic and Lease costs
+    Completion costs
+    Professional overhead costs for year 0
+    
+  Final net revenue for each year:
+    Revenues - Costs
+    Revenues:
+      ((Oil price * Annual production) * NRI) * (1-severance tax)
+      Oil price = triangle distribution for each year based on projections
+      Annual production = calculated based on initial production and decline
+      NRI = simulated, constant across well lifetime
+      Severance tax= 4.6%
+    Costs:
+      Professional overhead each year - constant, simulated
+      Operating costs - changes year to year
+    
+
+Initial cost
+```{r}
+drill.cost <- nonnorm_cost_2020 * 1000
+lease.cost <- rnorm(n=10000, mean = 600, sd = 50) * 960
+seismic.cost <- rnorm(n=10000, mean = 3, sd = .35) * 43000
+completion.cost <- rnorm(n=10000, mean = 390000, sd = 50000)
+prof.cost <- rtriangle(n=10000, a = 172000, b = 279500, c = 215000)
+
+initial.cost <- drill.cost + lease.cost + seismic.cost + completion.cost + prof.cost
+```
+
+Yearly production
+
+```{r}
+volume_cumulative_30yrs <- rep(0,10000)
+R <- matrix(data=cbind(1,0.64, 0.64, 1), nrow=2)
+U <- t(chol(R))
+
+standardize <- function(x){
+  x.std = (x - mean(x))/sd(x)
+  return(x.std)
+}
+
+destandardize <- function(x.std, x){
+  x.old = (x.std * sd(x)) + mean(x)
+  return(x.old)
+}
+
+set.seed(1)
+
+IP.r <- rlnorm(n=10000, mean= 6, sd = 0.28)
+decline.r <- runif(n=10000,min=.15, max=.32)
+Both.r <- cbind(standardize(IP.r), standardize(decline.r))
+IPD.r <- U %*% t(Both.r)
+IPD.r <- t(IPD.r)
+  
+final.IP.r <- destandardize(IPD.r[,1], IP.r)
+final.decline.r <- destandardize(IPD.r[,2], decline.r)
+
+#changing decline to be within its regular bounds of .15 to .32, even though this will slightly mess with correlation
+final.decline.r[final.decline.r<.15] <- .15
+final.decline.r[final.decline.r>.32] <- .32
+
+
+rate0 <- final.IP.r
+
+#simulating declining rates for 30 years
+for(year in 1:15){
+  #set rate at end of year equal to rate at beginning minus decline
+  #if the decline is more than 100% (due to correlation stuff) set rate=0
+  rate1 <- rate0*(1 - final.decline.r)
+  #calculate volume of oil in year
+  eval(parse(text=paste('volume_',year,' <- 365 * (rate0 + rate1) / 2',sep="")))
+  #set rate at beginning of next year to rate at end of previous year
+  rate0 <- rate1
+}
+
+
+hist(volume_1, breaks=50)
+hist(volume_5, breaks=50)
+hist(volume_10, breaks=50)
+hist(volume_15, breaks=50)
+
+```
+
+Yearly oil price
+
+```{r}
+for (year in 1:15){
+  eval(parse(text=paste('price_',year,' <- rtriangle(n=10000, a=projections[[',year+1,',3]], b=projections[[',year+1,',2]], c=projections[[',year+1,',4]])',sep="")))
+}
+```
+
+NRI, calculation of yearly revenue
+```{r}
+NRI <- rnorm(n=10000, mean=.75, sd=.02)
+for (year in 1:15){
+  eval(parse(text=paste('rev_',year,' <- (volume_',year,' * price_',year,') * NRI * (1-.046)', sep="")))
+}
+```
+
+
+calculation of yearly costs
+
+```{r}
+for (year in 1:15){
+  eval(parse(text=paste('op.cost_',year,' <- rnorm(n=10000, mean=2.25, sd=0.3)', sep="")))
+  eval(parse(text=paste('op.cost.total_',year,' <- op.cost_',year,' * volume_',year, sep="")))
+  eval(parse(text=paste('cost.total_',year,' <- op.cost.total_',year,' + prof.cost', sep="")))
+}
+```
+
+calculation of yearly FNR
+
+```{r}
+for (year in 1:15){
+  eval(parse(text=paste('fnr_',year,' <- rev_',year,' - cost.total_',year, sep="")))
+}
+```
+
+calculation of net present value
+
+```{r}
+
+NPV = -initial.cost +
+  fnr_1/(1.1) +
+  fnr_2/(1.1^2) +
+  fnr_3/(1.1^3) +
+  fnr_4/(1.1^4) +
+  fnr_5/(1.1^5) +
+  fnr_6/(1.1^6) +
+  fnr_7/(1.1^7) +
+  fnr_8/(1.1^8) +
+  fnr_9/(1.1^9) +
+  fnr_10/(1.1^10) +
+  fnr_11/(1.1^11) +
+  fnr_12/(1.1^12) +
+  fnr_13/(1.1^13) +
+  fnr_14/(1.1^14) +
+  fnr_15/(1.1^15)
+
+hist(NPV, breaks=50)
+mean(NPV)
+```

@@ -1,0 +1,298 @@
+---
+title: "hw3_grant"
+author: "Grant King"
+date: "2/18/2020"
+output: html_document
+---
+
+```{r}
+rm(list=ls())
+library(car)
+library(caret)
+library(tidyr)
+library(dplyr)
+library(stats)
+library(readxl)
+library(ggplot2)
+library(clipr)
+library(ks)
+library(EnvStats)
+library(triangle)
+library(knitr)
+library(MASS)
+library(rgl)
+library(graphics)
+library(truncnorm)
+library(scales)
+library(extraDistr)
+```
+
+
+Setting up distributions and calculating the probability of a producing well
+```{r}
+
+num_simulations = 1000000
+set.seed(1)
+
+hydrocarbons <- rtruncnorm(n = num_simulations, a = 0, b = 1, mean = .99, sd = .05)
+structure <- rnorm(n=num_simulations, mean=1, sd=0)
+reservoir <- rtruncnorm(n = num_simulations, a = 0, b = 1, mean = .80, sd = .10)
+seal <- rnorm(n=num_simulations, mean=1, sd=0)
+
+total_prob <- hydrocarbons * structure * reservoir * seal
+```
+
+Plotting these probability distributions
+
+```{r}
+# plot hydrocarbons and reservoir histograms
+  ggplot(as.data.frame(hydrocarbons), aes(x=hydrocarbons)) +
+    geom_histogram(col = 'black',
+                  fill = 'orange',
+                  bins = 40) +
+    geom_vline(aes(xintercept=mean(hydrocarbons)),
+                  color="darkred",
+                  linetype="dashed",
+                  size=1) +
+    labs(x="Probability of Hydrocarbons Present", y="Frequency") +
+    theme(panel.background = element_rect(color = 'lightgrey'),
+                  panel.grid.major.y = element_line(color = 'white'),
+                  panel.grid = element_blank()
+  )
+  
+  ggplot(as.data.frame(reservoir), aes(x=reservoir)) +
+    geom_histogram(col = 'black',
+                  fill = 'orange',
+                  bins = 40) +
+    geom_vline(aes(xintercept=mean(reservoir)),
+                  color="darkred",
+                  linetype="dashed",
+                  size=1) +
+    labs(x="Probability of Developed Reservoir", y="Frequency") +
+    theme(panel.background = element_rect(color = 'lightgrey'),
+                  panel.grid.major.y = element_line(color = 'white'),
+                  panel.grid = element_blank()
+  )
+    
+  '---------------------------------------------------------------------------------------------------'
+  
+  # plot histogram of wet well probability
+  ggplot(as.data.frame(total_prob), aes(x=total_prob)) +
+    geom_histogram(col = 'black',
+                  fill = 'orange',
+                  bins = 40) +
+    geom_vline(aes(xintercept=mean(total_prob)),
+                  color="darkred",
+                  linetype="dashed",
+                  size=1) +
+    labs(x="Probability of Producing Well", y="Frequency") +
+    theme(panel.background = element_rect(color = 'lightgrey'),
+                  panel.grid.major.y = element_line(color = 'white'),
+                  panel.grid = element_blank()
+  )
+```
+
+
+Calculating distribution for the number of wells and number of producing wells in the project
+
+```{r}
+
+  num_wells <- rdunif(n = num_simulations, min = 10, max = 30)
+  producing_wells <- rbinom(n=num_simulations, size = num_wells, prob = total_prob)
+  proportion_wet_wells <- producing_wells / num_wells
+  
+  
+  
+  ggplot(as.data.frame(proportion_wet_wells), aes(x=proportion_wet_wells)) +
+    geom_histogram(col = 'black',
+                  fill = 'orange',
+                  bins = 30) +
+    geom_vline(aes(xintercept=mean(proportion_wet_wells)),
+                  color="darkred",
+                  linetype="dashed",
+                  size=1) +
+    labs(x="Porportion of Wet Wells", y="Frequency") +
+    theme(panel.background = element_rect(color = 'lightgrey'),
+                  panel.grid.major.y = element_line(color = 'white'),
+                  panel.grid = element_blank()
+  )
+  
+  
+  
+  
+  dry_wells <- num_wells - producing_wells
+
+  hist(producing_wells, breaks = 50)
+  hist(dry_wells, breaks=50)
+  
+
+  
+```
+
+
+Bringing back in the calculations from HW2 to calculate the distribution for NPV. For each well in the project, we will need to calculate NPV if it is a wet well, or drilling cost if it is a wet well.
+
+This will run all of the hw1 code to get the data/objects. 
+Paste the path to 'hw1_script.R' below..  
+```{r setup, echo=FALSE}
+opts_chunk$set(echo = FALSE, cache=FALSE)
+read_chunk('C:/Users/grant/Documents/MSA/Spring/sim_risk/hw_2/hw1_script.R')
+```
+
+click green arrow to run this chunk
+```{r hw1_results}
+```
+
+Dry Well Cost
+```{r}
+drill.cost.dry <- nonnorm_cost_2020 * 1000
+lease.cost.dry <- rnorm(n=num_simulations * 20, mean = 600, sd = 50) * 960
+seismic.cost.dry <- rnorm(n=num_simulations * 20, mean = 3, sd = .35) * 43000
+prof.cost.dry <- rtriangle(n=num_simulations * 20, a = 172000, b = 279500, c = 215000)
+
+dry.well.cost <- drill.cost.dry + lease.cost.dry + seismic.cost.dry + prof.cost.dry
+
+```
+
+Wet Well NPV
+
+```{r}
+
+#initial cost
+drill.cost <- nonnorm_cost_2020 * 1000
+lease.cost <- rnorm(n=num_simulations * 20, mean = 600, sd = 50) * 960
+seismic.cost <- rnorm(n=num_simulations * 20, mean = 3, sd = .35) * 43000
+completion.cost <- rnorm(n=num_simulations * 20, mean = 390000, sd = 50000)
+prof.cost <- rtriangle(n=num_simulations * 20, a = 172000, b = 279500, c = 215000)
+
+initial.cost <- drill.cost + lease.cost + seismic.cost + completion.cost + prof.cost
+
+
+#revenue and stuff
+volume_cumulative_30yrs <- rep(0,num_simulations * 20)
+R <- matrix(data=cbind(1,0.64, 0.64, 1), nrow=2)
+U <- t(chol(R))
+
+standardize <- function(x){
+  x.std = (x - mean(x))/sd(x)
+  return(x.std)
+}
+
+destandardize <- function(x.std, x){
+  x.old = (x.std * sd(x)) + mean(x)
+  return(x.old)
+}
+
+set.seed(1)
+
+IP.r <- rlnorm(n=num_simulations * 20, mean= 6, sd = 0.28)
+decline.r <- runif(n=num_simulations * 20,min=.15, max=.32)
+Both.r <- cbind(standardize(IP.r), standardize(decline.r))
+IPD.r <- U %*% t(Both.r)
+IPD.r <- t(IPD.r)
+  
+final.IP.r <- destandardize(IPD.r[,1], IP.r)
+final.decline.r <- destandardize(IPD.r[,2], decline.r)
+
+#changing decline to be within its regular bounds of .15 to .32, even though this will slightly mess with correlation
+final.decline.r[final.decline.r<.15] <- .15
+final.decline.r[final.decline.r>.32] <- .32
+
+
+rate0 <- final.IP.r
+
+#simulating declining rates for 30 years
+for(year in 1:15){
+  #set rate at end of year equal to rate at beginning minus decline
+  #if the decline is more than 100% (due to correlation stuff) set rate=0
+  rate1 <- rate0*(1 - final.decline.r)
+  #calculate volume of oil in year
+  eval(parse(text=paste('volume_',year,' <- 365 * (rate0 + rate1) / 2',sep="")))
+  #set rate at beginning of next year to rate at end of previous year
+  rate0 <- rate1
+}
+
+
+for (year in 1:15){
+  eval(parse(text=paste('price_',year,' <- rtriangle(n=num_simulations * 20, a=projections[[',year+1,',3]], b=projections[[',year+1,',2]], c=projections[[',year+1,',4]])',sep="")))
+  }
+  
+NRI <- rnorm(n=num_simulations * 20, mean=.75, sd=.02)
+for (year in 1:15){
+  eval(parse(text=paste('rev_',year,' <- (volume_',year,' * price_',year,') * NRI * (1-.046)', sep="")))
+}
+  
+for (year in 1:15){
+  eval(parse(text=paste('op.cost_',year,' <- rnorm(n=num_simulations * 20, mean=2.25, sd=0.3)', sep="")))
+  eval(parse(text=paste('op.cost.total_',year,' <- op.cost_',year,' * volume_',year, sep="")))
+  eval(parse(text=paste('cost.total_',year,' <- op.cost.total_',year,' + prof.cost', sep="")))
+}
+  
+for (year in 1:15){
+  eval(parse(text=paste('fnr_',year,' <- rev_',year,' - cost.total_',year, sep="")))
+}
+  
+NPV = -initial.cost +
+  fnr_1/(1.1) +
+  fnr_2/(1.1^2) +
+  fnr_3/(1.1^3) +
+  fnr_4/(1.1^4) +
+  fnr_5/(1.1^5) +
+  fnr_6/(1.1^6) +
+  fnr_7/(1.1^7) +
+  fnr_8/(1.1^8) +
+  fnr_9/(1.1^9) +
+  fnr_10/(1.1^10) +
+  fnr_11/(1.1^11) +
+  fnr_12/(1.1^12) +
+  fnr_13/(1.1^13) +
+  fnr_14/(1.1^14) +
+  fnr_15/(1.1^15)
+```
+
+
+```{r}
+  # simulate NPV for entire project (dry and wet well count TBD from above)
+  total_NPV <- rep(0,num_simulations) 
+  i_prod <- 1
+  i_dry <- 1
+  for (i in 1:num_simulations){
+    #adding the NPV of a number of observations in the distribution equal to the number of producing wells
+    total_NPV[i] <- total_NPV[i] + sum(NPV[i_prod:i_prod+producing_wells[i]])
+    #subtracting the dry.well.cost of a number of observations in the distribution equal to the number of dry wells
+    total_NPV[i] <- total_NPV[i] - sum(dry.well.cost[i_dry:i_dry+dry_wells[i]])
+    #iterating the counters for the producing well and dry well distributions so samples aren't repeated
+    i_prod <- i_prod + producing_wells[i]
+    i_dry <- i_dry + dry_wells[i]
+  }
+  
+  '---------------------------------------------------------------------------------------------------'
+
+  # calculate expected return including 5% VaR and 5% CVaR and interpret these values
+
+expected_return <- mean(total_NPV)
+VaR <- quantile(total_NPV, .05)
+cVaR <- mean(total_NPV[total_NPV < VaR])
+
+
+print(paste("Expected Return:", expected_return))
+print(paste("95% Value at Risk:", VaR))
+print(paste("95% Conditioned Value at Risk", cVaR))
+
+
+  # plot histogram of wet well probability
+  ggplot(as.data.frame(total_NPV), aes(x=total_NPV)) +
+    geom_histogram(col = 'black',
+                  fill = 'orange',
+                  bins = 40) +
+    geom_vline(aes(xintercept=mean(total_NPV)),
+                  color="darkred",
+                  linetype="dashed",
+                  size=1) +
+    labs(x="Net Present Value of Project", y="Frequency") +
+    theme(panel.background = element_rect(color = 'lightgrey'),
+                  panel.grid.major.y = element_line(color = 'white'),
+                  panel.grid = element_blank()) + 
+    scale_x_continuous(labels = comma)
+  
+```
